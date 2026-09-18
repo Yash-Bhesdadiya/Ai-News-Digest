@@ -97,3 +97,4 @@ if __name__ == "__main__":
     print(transcript.text)
     channel_videos: List[ChannelVideo] = scraper.scrape_channel("UCn8ujwUInbJkBhffxqAPBVQ", hours=200)
     
+
