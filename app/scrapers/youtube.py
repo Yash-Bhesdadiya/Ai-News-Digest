@@ -1,11 +1,19 @@
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Optional
+import logging
 import os
+
 import feedparser
 from pydantic import BaseModel
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+from youtube_transcript_api._errors import (
+    TranscriptsDisabled,
+    NoTranscriptFound,
+)
 from youtube_transcript_api.proxies import WebshareProxyConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class Transcript(BaseModel):
@@ -22,79 +30,201 @@ class ChannelVideo(BaseModel):
 
 
 class YouTubeScraper:
+
     def __init__(self):
         proxy_config = None
+
         proxy_username = os.getenv("PROXY_USERNAME")
         proxy_password = os.getenv("PROXY_PASSWORD")
-        
+
         if proxy_username and proxy_password:
             proxy_config = WebshareProxyConfig(
                 proxy_username=proxy_username,
-                proxy_password=proxy_password
+                proxy_password=proxy_password,
             )
-        
-        self.transcript_api = YouTubeTranscriptApi(proxy_config=proxy_config)
+
+        self.transcript_api = YouTubeTranscriptApi(
+            proxy_config=proxy_config
+        )
 
     def _get_rss_url(self, channel_id: str) -> str:
-        return f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+        return (
+            f"https://www.youtube.com/feeds/videos.xml"
+            f"?channel_id={channel_id}"
+        )
 
     def _extract_video_id(self, video_url: str) -> str:
+
         if "youtube.com/watch?v=" in video_url:
             return video_url.split("v=")[1].split("&")[0]
+
         if "youtube.com/shorts/" in video_url:
             return video_url.split("shorts/")[1].split("?")[0]
+
         if "youtu.be/" in video_url:
             return video_url.split("youtu.be/")[1].split("?")[0]
+
         return video_url
 
-    def get_transcript(self, video_id: str) -> Optional[Transcript]:
+    def get_transcript(
+        self,
+        video_id: str
+    ) -> Optional[Transcript]:
+
         try:
             transcript = self.transcript_api.fetch(video_id)
-            text = " ".join([snippet.text for snippet in transcript.snippets])
+
+            text = " ".join(
+                snippet.text
+                for snippet in transcript.snippets
+            )
+
             return Transcript(text=text)
+
         except (TranscriptsDisabled, NoTranscriptFound):
-            return None
-        except Exception:
+            logger.info(
+                f"Transcript unavailable for video: {video_id}"
+            )
             return None
 
-    def get_latest_videos(self, channel_id: str, hours: int = 24) -> list[ChannelVideo]:
-        feed = feedparser.parse(self._get_rss_url(channel_id))
+        except Exception as e:
+            logger.error(
+                f"Error fetching transcript for {video_id}: {e}"
+            )
+            raise
+
+    def get_latest_videos(
+        self,
+        channel_id: str,
+        hours: int = 24
+    ) -> list[ChannelVideo]:
+
+        feed_url = self._get_rss_url(channel_id)
+
+        logger.info(
+            f"Fetching YouTube RSS feed for channel: {channel_id}"
+        )
+
+        feed = feedparser.parse(feed_url)
+
         if not feed.entries:
+            logger.info(
+                f"No videos found for channel: {channel_id}"
+            )
             return []
-        
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+        cutoff_time = (
+            datetime.now(timezone.utc)
+            - timedelta(hours=hours)
+        )
+
         videos = []
-        
+
         for entry in feed.entries:
+
+            # Skip YouTube Shorts
             if "/shorts/" in entry.link:
                 continue
-            published_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-            if published_time >= cutoff_time:
-                video_id = self._extract_video_id(entry.link)
-                videos.append(ChannelVideo(
-                    title=entry.title,
-                    url=entry.link,
-                    video_id=video_id,
-                    published_at=published_time,
-                    description=entry.get("summary", "")
-                ))
-        
+
+            published_time = datetime(
+                *entry.published_parsed[:6],
+                tzinfo=timezone.utc
+            )
+
+            if published_time < cutoff_time:
+                continue
+
+            video_id = self._extract_video_id(entry.link)
+
+            video = ChannelVideo(
+                title=entry.title,
+                url=entry.link,
+                video_id=video_id,
+                published_at=published_time,
+                description=entry.get("summary", ""),
+            )
+
+            videos.append(video)
+
+        logger.info(
+            f"Found {len(videos)} videos for channel {channel_id}"
+        )
+
         return videos
 
-    def scrape_channel(self, channel_id: str, hours: int = 150) -> list[ChannelVideo]:
-        videos = self.get_latest_videos(channel_id, hours)
-        result = []
-        for video in videos:
-            transcript = self.get_transcript(video.video_id)
-            result.append(video.model_copy(update={"transcript": transcript.text if transcript else None}))
-        return result
-    
-    
-    
-if __name__ == "__main__":
-    scraper = YouTubeScraper()
-    transcript: Transcript = scraper.get_transcript("jqd6_bbjhS8")
-    print(transcript.text)
-    channel_videos: List[ChannelVideo] = scraper.scrape_channel("UCn8ujwUInbJkBhffxqAPBVQ", hours=200)
-    
+    def scrape_channel(
+        self,
+        channel_id: str,
+        hours: int = 24
+    ) -> list[ChannelVideo]:
 
+        videos = self.get_latest_videos(
+            channel_id=channel_id,
+            hours=hours
+        )
+
+        result = []
+
+        for video in videos:
+
+            try:
+                transcript = self.get_transcript(
+                    video.video_id
+                )
+
+                result.append(
+                    video.model_copy(
+                        update={
+                            "transcript": (
+                                transcript.text
+                                if transcript
+                                else None
+                            )
+                        }
+                    )
+                )
+
+            except Exception as e:
+
+                logger.error(
+                    f"Failed transcript for "
+                    f"{video.video_id}: {e}"
+                )
+
+                result.append(video)
+
+        return result
+
+
+if __name__ == "__main__":
+
+    from app.config import YOUTUBE_CHANNELS
+
+    scraper = YouTubeScraper()
+
+    print("\n========== YouTube Test ==========\n")
+
+    total = 0
+
+    for channel_id in YOUTUBE_CHANNELS:
+
+        videos = scraper.get_latest_videos(
+            channel_id,
+            hours=24
+        )
+
+        print(
+            f"Channel {channel_id}: "
+            f"{len(videos)} videos"
+        )
+
+        for video in videos:
+            print(f"Title: {video.title}")
+            print(f"URL: {video.url}")
+            print(f"Video ID: {video.video_id}")
+            print(f"Published: {video.published_at}")
+            print()
+
+        total += len(videos)
+
+    print(f"Total videos: {total}")
