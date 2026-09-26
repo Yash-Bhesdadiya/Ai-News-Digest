@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 import logging
 from dotenv import load_dotenv
 
@@ -7,7 +12,7 @@ from app.agent.email_agent import EmailAgent, RankedArticleDetail, EmailDigestRe
 from app.agent.curator_agent import CuratorAgent
 from app.profiles.user_profile import USER_PROFILE
 from app.database.repository import Repository
-from app.services.email import send_email, digest_to_html
+from app.services.email_services import send_email, digest_to_html
 
 logging.basicConfig(
     level=logging.INFO,
@@ -102,4 +107,5 @@ if __name__ == "__main__":
         print(f"Articles: {result['articles_count']}")
     else:
         print(f"Error: {result['error']}")
+
 

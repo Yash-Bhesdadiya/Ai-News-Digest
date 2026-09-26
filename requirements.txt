@@ -10,3 +10,4 @@ youtube_transcript_api
 docling
 feedparser
 markdown
+markdownify
